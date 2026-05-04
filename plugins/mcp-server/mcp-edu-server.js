@@ -101,6 +101,16 @@ server.tool(
   ({ cmid }) => text(run(MOODLE_SCRIPT, ["show-page", cmid]))
 );
 
+server.tool(
+  "moodle_get_quiz_by_name",
+  "Find the cmid of a quiz based on its name in a section",
+  {
+    sectionNum: z.string().describe("Section number"),
+    quizName: z.string().describe("Quiz name"),
+  },
+  ({ sectionNum, quizName }) => text(run(MOODLE_SCRIPT, ["get-quiz-by-name", sectionNum, quizName]))
+);
+
 // --- Update operations ---
 
 server.tool(
@@ -140,6 +150,18 @@ server.tool(
 );
 
 // --- Create operations ---
+
+server.tool(
+  "moodle_create_label",
+  "Create a new Moodle label (text section) from a Markdown/HTML file (dry-run unless live=true)",
+  {
+    sectionNum: z.string().describe("Section number"),
+    contentFile: z.string().describe("Path to Markdown or HTML file"),
+    live: z.boolean().default(false).describe("Set true to apply changes (default: dry-run)"),
+  },
+  ({ sectionNum, contentFile, live }) =>
+    text(run(MOODLE_SCRIPT, ["create-label", sectionNum, contentFile, ...(live ? ["--live"] : [])]))
+);
 
 server.tool(
   "moodle_create_url",
@@ -215,14 +237,29 @@ server.tool(
 
 server.tool(
   "moodle_create_quiz",
-  "Create a quiz in Moodle from a JSON config (dry-run unless live=true)",
+  "Create a quiz in Moodle (dry-run unless live=true)",
   {
     sectionNum: z.string().describe("Section number"),
-    configFile: z.string().describe("Path to quiz config JSON file"),
+    name: z.string().describe("Quiz name"),
+    configFile: z.string().optional().describe("Path to quiz config JSON file (optional)"),
     live: z.boolean().default(false).describe("Set true to apply changes (default: dry-run)"),
   },
-  ({ sectionNum, configFile, live }) =>
-    text(run(MOODLE_SCRIPT, ["create-quiz", sectionNum, configFile, ...(live ? ["--live"] : [])]))
+  async ({ sectionNum, name, configFile, live }) => {
+    let config = { name };
+    if (configFile) {
+      const { readFileSync } = await import("fs");
+      const fileConfig = JSON.parse(readFileSync(resolve(configFile), "utf-8"));
+      config = { ...fileConfig, name }; // name from MCP parameter always wins
+    }
+    const { writeFileSync, unlinkSync } = await import("fs");
+    const tmpPath = resolve(__dirname, `tmp-quiz-config-${Date.now()}.json`);
+    writeFileSync(tmpPath, JSON.stringify(config));
+    try {
+      return await text(run(MOODLE_SCRIPT, ["create-quiz", sectionNum, tmpPath, ...(live ? ["--live"] : [])]));
+    } finally {
+      unlinkSync(tmpPath);
+    }
+  }
 );
 
 // --- Section operations ---
@@ -276,6 +313,47 @@ server.tool(
     text(run(MOODLE_SCRIPT, ["delete-section", sectionId, ...(live ? ["--live"] : [])]))
 );
 
+server.tool(
+  "moodle_show_section",
+  "Show a Moodle section (dry-run unless live=true)",
+  {
+    sectionId: z.string().describe("Section ID to show"),
+    live: z.boolean().default(false).describe("Set true to apply changes (default: dry-run)"),
+  },
+  ({ sectionId, live }) =>
+    text(run(MOODLE_SCRIPT, ["show-section", sectionId, ...(live ? ["--live"] : [])]))
+);
+
+server.tool(
+  "moodle_hide_section",
+  "Hide a Moodle section (dry-run unless live=true)",
+  {
+    sectionId: z.string().describe("Section ID to hide"),
+    live: z.boolean().default(false).describe("Set true to apply changes (default: dry-run)"),
+  },
+  ({ sectionId, live }) =>
+    text(run(MOODLE_SCRIPT, ["hide-section", sectionId, ...(live ? ["--live"] : [])]))
+);
+
+server.tool(
+  "moodle_clear_section",
+  "Delete all activities in a section to create a clean state",
+  {
+    sectionNum: z.string().describe("Section number or ID to clear"),
+    confirm: z.boolean().describe("Explicit confirmation to delete ALL contents and submissions in this section"),
+    live: z.boolean().default(false).describe("Set true to apply changes (default: dry-run)"),
+  },
+  ({ sectionNum, confirm, live }) => {
+    if (!confirm && live) {
+      return Promise.resolve({
+        content: [{ type: "text", text: "Error: You must explicitly confirm that all contents and submissions of the section should be deleted by setting 'confirm' to true." }],
+        isError: true,
+      });
+    }
+    return text(run(MOODLE_SCRIPT, ["clear-section", sectionNum, ...(live ? ["--live"] : [])]));
+  }
+);
+
 // --- Activity operations ---
 
 server.tool(
@@ -312,6 +390,17 @@ server.tool(
 );
 
 server.tool(
+  "moodle_show_activity",
+  "Show a Moodle activity (dry-run unless live=true)",
+  {
+    cmid: z.string().describe("Course module ID"),
+    live: z.boolean().default(false).describe("Set true to apply changes (default: dry-run)"),
+  },
+  ({ cmid, live }) =>
+    text(run(MOODLE_SCRIPT, ["show-activity", cmid, ...(live ? ["--live"] : [])]))
+);
+
+server.tool(
   "moodle_move_activity",
   "Move a Moodle activity to a different section (dry-run unless live=true)",
   {
@@ -321,6 +410,18 @@ server.tool(
   },
   ({ cmid, targetSectionId, live }) =>
     text(run(MOODLE_SCRIPT, ["move-activity", cmid, targetSectionId, ...(live ? ["--live"] : [])]))
+);
+
+server.tool(
+  "moodle_move_activity_after",
+  "Move a Moodle activity behind another activity (dry-run unless live=true)",
+  {
+    cmidToMove: z.string().describe("Course module ID to move"),
+    afterCmid: z.string().describe("Target course module ID (move after this)"),
+    live: z.boolean().default(false).describe("Set true to apply changes (default: dry-run)"),
+  },
+  ({ cmidToMove, afterCmid, live }) =>
+    text(run(MOODLE_SCRIPT, ["move-activity-after", cmidToMove, afterCmid, ...(live ? ["--live"] : [])]))
 );
 
 // --- Quiz operations ---
@@ -333,6 +434,16 @@ server.tool(
     giftFile: z.string().describe("Path to GIFT file"),
   },
   ({ cmid, giftFile }) => text(run(MOODLE_SCRIPT, ["import-gift", cmid, giftFile], 120_000))
+);
+
+server.tool(
+  "moodle_import_moodle_xml",
+  "Import Moodle-XML-format questions into a Moodle quiz",
+  {
+    cmid: z.string().describe("Course module ID of the quiz"),
+    xmlFile: z.string().describe("Path to Moodle XML file"),
+  },
+  ({ cmid, xmlFile }) => text(run(MOODLE_SCRIPT, ["import-moodle-xml", cmid, xmlFile], 120_000))
 );
 
 server.tool(
@@ -355,6 +466,13 @@ server.tool(
   },
   ({ cmid, categoryName }) =>
     text(run(MOODLE_SCRIPT, ["add-questions-to-quiz", cmid, ...(categoryName ? [categoryName] : [])]))
+);
+
+server.tool(
+  "moodle_get_quiz_categories",
+  "List all question categories available in the context of a quiz",
+  { cmid: z.string().describe("Course module ID of the quiz") },
+  ({ cmid }) => text(run(MOODLE_SCRIPT, ["get-quiz-categories", cmid]))
 );
 
 // --- AI Grading ---

@@ -155,6 +155,44 @@ async function uploadSection(srcSecDir) {
     const filePath = act.file ? join(aDir, act.file) : null;
     const sec2 = String(newSec.number);
 
+    // Special case: quiz with questions.xml — needs cmid immediately after creation
+    if (act.type === 'quiz' && existsSync(join(aDir, 'quiz-config.json')) && existsSync(join(aDir, 'questions.xml'))) {
+      const configPath = join(aDir, 'quiz-config.json');
+      const xmlFile = join(aDir, 'questions.xml');
+      const createCmd = `create-quiz ${sec2} ${quote(configPath)}`;
+      if (!live) {
+        console.log(`  · ${tag}`);
+        console.log(`    $ ${createCmd}  (DRY)`);
+        console.log(`    $ import-moodle-xml <new-cmid> ${xmlFile}  (DRY)`);
+        console.log(`    $ add-questions-to-quiz <new-cmid>  (DRY)`);
+        okCount++;
+        createdActivities.push(act);
+      } else {
+        const secRe = new RegExp(`Section\\s+${newSec.number}[^\\n]*\\n\\s*Modules:\\s*([0-9, ]+)`);
+        const preCms = new Set(
+          (structure().match(secRe)?.[1] || '').split(',').map(s => parseInt(s.trim())).filter(Boolean)
+        );
+        try {
+          console.log(`  · ${tag}`);
+          run(createCmd);
+          const postCms = (structure().match(secRe)?.[1] || '')
+            .split(',').map(s => parseInt(s.trim())).filter(Boolean);
+          const newCmid = postCms.find(id => !preCms.has(id));
+          if (newCmid) {
+            run(`import-moodle-xml ${newCmid} ${quote(xmlFile)}`);
+            run(`add-questions-to-quiz ${newCmid}`);
+          } else {
+            console.warn('    ⚠ Neue Quiz-cmid nicht ermittelt — Fragen-Import übersprungen');
+          }
+          okCount++;
+          createdActivities.push(act);
+        } catch {
+          failCount++;
+        }
+      }
+      continue;
+    }
+
     let cmd = null;
     if (act.type === 'page' && contentMd) cmd = `create-page ${sec2} ${quote(act.name)} ${quote(contentMd)}`;
     else if (act.type === 'label' && contentMd) cmd = `create-label ${sec2} ${quote(contentMd)}`;

@@ -53,7 +53,7 @@ Use `--browser msedge` or `--browser chrome` if your org requires a specific bro
 | Setup | `login [--browser msedge\|chrome]` | Browser login, save cookie (auto-closes) |
 | Read | `structure`, `list-activities`, `show-label`, `show-page` | Inspect course |
 | Update | `update-label`, `update-page`, `update-summary` | Modify content |
-| CRUD | `create-url`, `create-page`, `create-resource`, `create-assign`, `create-forum`, `create-quiz` | Create activities |
+| CRUD | `create-label`, `create-url`, `create-page`, `create-resource`, `create-assign`, `create-forum`, `create-quiz` | Create activities |
 | Manage | `delete-activity`, `hide-activity`, `indent-activity`, `move-activity` | Manage activities |
 | Sections | `add-section`, `delete-section`, `duplicate-section`, `move-section`, `rename-section` | Manage sections |
 | Quiz | `import-gift`, `add-questions-to-quiz`, `delete-quiz-questions` | Quiz management |

@@ -75,6 +75,7 @@ NODE_PATH="${CLAUDE_PLUGIN_DATA}/node_modules" node "${CLAUDE_PLUGIN_ROOT}/scrip
 | **Sections** | `move-section` | `<sectionId> <targetSectionId>` | Move section before target |
 | **Sections** | `rename-section` | `<sectionId> <title>` | Rename section |
 | **Quiz** | `import-gift` | `<cmid> <giftFile>` | Import GIFT questions |
+| **Quiz** | `import-moodle-xml` | `<cmid> <xmlFile>` | Import Moodle-XML questions |
 | **Quiz** | `add-questions-to-quiz` | `<cmid> [categoryName]` | Assign questions to quiz |
 | **Quiz** | `delete-quiz-questions` | `<cmid> [categoryName]` | Delete questions in category |
 | **Grading** | `grade-essay scrape` | `<cmid> --gift <path> [--slot N] --output <file>` | Export student responses as JSON |

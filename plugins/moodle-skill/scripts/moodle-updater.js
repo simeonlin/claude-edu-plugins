@@ -331,6 +331,22 @@ async function showPage(moduleId) {
   console.log('-'.repeat(70));
 }
 
+async function getQuizByName(sectionNum, quizName) {
+  const state = await getCourseState();
+  const section = state.section.find(s => s.number === sectionNum || String(s.id) === String(sectionNum));
+  if (!section) throw new Error(`Section ${sectionNum} nicht gefunden.`);
+
+  const quiz = section.cmlist
+    .map(cmId => state.cm.find(m => m.id === cmId))
+    .find(cm => cm && cm.module === 'quiz' && cm.name === quizName);
+
+  if (!quiz) {
+    throw new Error(`Quiz "${quizName}" in Section ${section.number} nicht gefunden.`);
+  }
+  console.log(quiz.id);
+  return quiz.id;
+}
+
 // --- Update-Befehle ---
 
 async function updateModuleContent(label, id, htmlFile, live, { fetchFn, fieldSelector, submitUrl }) {
@@ -453,6 +469,65 @@ async function renameSection(sectionId, title, live) {
 
   await submitForm(`${MOODLE_URL}/course/editsection.php`, formData);
   console.log('\nSection erfolgreich umbenannt!');
+}
+
+async function hideSection(sectionId, live) {
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`Section verbergen: ${sectionId} ${live ? '(LIVE)' : '(DRY RUN)'}`);
+  console.log('='.repeat(60));
+
+  if (!live) {
+    console.log('\nDRY RUN - nichts geaendert. Mit --live ausfuehren.');
+    return;
+  }
+
+  await courseFormatAction('section_hide', [sectionId]);
+  invalidateCache();
+  console.log('\nSection erfolgreich verborgen!');
+}
+
+async function showSection(sectionId, live) {
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`Section anzeigen: ${sectionId} ${live ? '(LIVE)' : '(DRY RUN)'}`);
+  console.log('='.repeat(60));
+
+  if (!live) {
+    console.log('\nDRY RUN - nichts geaendert. Mit --live ausfuehren.');
+    return;
+  }
+
+  await courseFormatAction('section_show', [sectionId]);
+  invalidateCache();
+  console.log('\nSection erfolgreich angezeigt!');
+}
+
+async function clearSection(sectionNumOrId, live) {
+  const state = await getCourseState();
+  const section = state.section.find(s =>
+    String(s.number) === String(sectionNumOrId) || String(s.id) === String(sectionNumOrId)
+  );
+
+  if (!section) throw new Error(`Section ${sectionNumOrId} nicht gefunden.`);
+
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`Section leeren: ${section.number} (ID: ${section.id}) ${live ? '(LIVE)' : '(DRY RUN)'}`);
+  console.log('='.repeat(60));
+  console.log(`Aktivitäten zum Löschen: ${section.cmlist.length}`);
+
+  if (section.cmlist.length === 0) {
+    console.log('Section ist bereits leer.');
+    return;
+  }
+
+  if (!live) {
+    console.log('\nDRY RUN - nichts geaendert. Mit --live ausfuehren.');
+    return;
+  }
+
+  // Bulk delete activities in the section
+  await courseFormatAction('cm_delete', section.cmlist);
+  invalidateCache();
+  console.log(`\n${section.cmlist.length} Aktivitäten erfolgreich geloescht!`);
 }
 
 async function createModule(type, sectionNum, name, live, fieldSetup, beforemod) {
@@ -584,10 +659,16 @@ async function createQuiz(sectionNum, config, live) {
   const formData = getFormData(form);
 
   formData.set('name', config.name);
-  formData.set('timelimit[number]', String(config.timeLimit));
-  formData.set('timelimit[timeunit]', '1');  // 1 = Sekunden
-  formData.set('attempts', String(config.attempts));
-  formData.set('shuffleanswers', config.shuffle ? '1' : '0');
+  if (config.timeLimit !== undefined) {
+    formData.set('timelimit[number]', String(config.timeLimit));
+    formData.set('timelimit[timeunit]', '1');  // 1 = Sekunden
+  }
+  if (config.attempts !== undefined) {
+    formData.set('attempts', String(config.attempts));
+  }
+  if (config.shuffle !== undefined) {
+    formData.set('shuffleanswers', config.shuffle ? '1' : '0');
+  }
   formData.set('preferredbehaviour', 'deferredfeedback');
 
   // SEB-Konfiguration (Feldnamen via dump-form verifiziert)
@@ -597,9 +678,10 @@ async function createQuiz(sectionNum, config, live) {
     formData.set('seb_linkquitseb', '');
     formData.set('seb_userconfirmquit', '1');
     formData.set('seb_allowuserquitseb', '1');
-    formData.set('seb_activateurlfiltering', config.sebUrls.length > 0 ? '1' : '0');
+    const sebUrls = config.sebUrls || [MOODLE_URL, 'https://login.microsoftonline.com'];
+    formData.set('seb_activateurlfiltering', sebUrls.length > 0 ? '1' : '0');
     formData.set('seb_filterembeddedcontent', '0');  // NICHT aktivieren (bricht MS-Login)
-    formData.set('seb_expressionsallowed', config.sebUrls.join('\n'));
+    formData.set('seb_expressionsallowed', sebUrls.join('\n'));
     formData.set('seb_regexallowed', '');
     formData.set('seb_expressionsblocked', '');
     formData.set('seb_regexblocked', '');
@@ -789,6 +871,102 @@ async function importGiftQuestions(giftPath, quizCmId, quizName) {
   }
 }
 
+/** Import Moodle-XML questions into a quiz's question bank via Moodle import form. */
+async function importMoodleXmlQuestions(xmlPath, quizCmId) {
+  const content = readFileSync(xmlPath, 'utf-8');
+
+  // 2. Load the import form
+  const importUrl = `${MOODLE_URL}/question/bank/importquestions/import.php?cmid=${quizCmId}`;
+  const resp = await moodleFetch(importUrl);
+  const html = await resp.text();
+  const dom = new JSDOM(html);
+  const doc = dom.window.document;
+  const form = doc.querySelector('form[action*="import.php"]');
+  if (!form) throw new Error('Import-Formular nicht gefunden');
+
+  // 3. Extract draft area itemid from the file input
+  const fileInput = form.querySelector('input[name="newfile"]');
+  const itemid = fileInput?.value || '0';
+
+  // 4. Extract context ID and upload repo ID from page
+  const scriptTags = [...doc.querySelectorAll('script')];
+  let ctxId = null;
+  for (const script of scriptTags) {
+    const ctxMatch = (script.textContent || '').match(/"contextid"\s*:\s*(\d+)/);
+    if (ctxMatch) { ctxId = ctxMatch[1]; break; }
+  }
+  if (!ctxId) {
+    for (const script of scriptTags) {
+      const cfgMatch = (script.textContent || '').match(/M\.cfg\s*=\s*\{[^}]*contextid\s*:\s*(\d+)/);
+      if (cfgMatch) { ctxId = cfgMatch[1]; break; }
+    }
+  }
+  if (!ctxId) throw new Error('Context-ID fuer Import nicht gefunden');
+
+  const sesskey = await getSesskey();
+  const repoId = extractUploadRepoId(html);
+
+  // 5. Upload XML file to draft area
+  const xmlBlob = new Blob([content], { type: 'text/xml' });
+  const fileName = basename(xmlPath);
+
+  const uploadFormData = new FormData();
+  uploadFormData.append('repo_upload_file', xmlBlob, fileName);
+  uploadFormData.append('title', fileName);
+  uploadFormData.append('author', 'Dozent');
+  uploadFormData.append('license', 'allrightsreserved');
+  uploadFormData.append('itemid', String(itemid));
+  uploadFormData.append('repo_id', String(repoId));
+  uploadFormData.append('sesskey', sesskey);
+  uploadFormData.append('client_id', 'moodle-updater');
+  uploadFormData.append('ctx_id', String(ctxId));
+  uploadFormData.append('env', 'filemanager');
+  uploadFormData.append('savepath', '/');
+
+  const uploadResp = await moodleFetch(`${MOODLE_URL}/repository/repository_ajax.php?action=upload`, {
+    method: 'POST',
+    headers: { 'Cookie': `MoodleSession=${getSessionCookie()}` },
+    body: uploadFormData,
+    timeout: UPLOAD_TIMEOUT_MS,
+  });
+  const uploadResult = await uploadResp.json();
+  if (uploadResult.error) throw new Error(`XML-Upload-Fehler: ${uploadResult.error}`);
+  console.log(`  Moodle-XML-Datei hochgeladen: ${fileName}`);
+
+  // 6. Submit the import form (format = xml)
+  const formData = getFormData(form);
+  formData.set('format', 'xml');
+  formData.set('stoponerror', '0');
+  const importResp = await moodleFetch(importUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: formData.toString(),
+  });
+  const importHtml = await importResp.text();
+
+  // Check for errors
+  if (importHtml.includes('alert-danger')) {
+    const dom2 = new JSDOM(importHtml);
+    const errors = [...dom2.window.document.querySelectorAll('.alert-danger')];
+    for (const err of errors) {
+      const errText = err.textContent?.replace(/\s+/g, ' ').trim();
+      if (errText && !errText.includes('Bei Fehler stoppen')) {
+        console.log(`  WARNUNG: ${errText.slice(0, 150)}`);
+      }
+    }
+  }
+
+  // Count imported questions (XML: <question type="..."> excluding category)
+  const expectedCount = [...content.matchAll(/<question\s+type="(?!category)[^"]+"/g)].length;
+  const importedMatch = importHtml.match(/(\d+)\s*Fragen?\s*werden\s*aus/);
+  const parsedCount = importedMatch ? parseInt(importedMatch[1]) : 0;
+  if (parsedCount > 0) {
+    console.log(`  ${parsedCount} Fragen erkannt, ${expectedCount} erwartet`);
+  } else {
+    console.log(`  WARNUNG: Keine Fragen im Import erkannt (${expectedCount} erwartet)`);
+  }
+}
+
 /**
  * Find a question category by name from the question bank page.
  * Loads question/edit.php for the quiz context and parses the category <select>.
@@ -826,6 +1004,27 @@ async function findQuizCategory(quizCmId, categoryName) {
     }
   }
   return null;
+}
+
+/**
+ * List all question categories for a quiz context.
+ */
+async function getQuizCategories(quizCmId) {
+  const qbResp = await moodleFetch(`${MOODLE_URL}/question/edit.php?cmid=${quizCmId}`);
+  const qbHtml = await qbResp.text();
+
+  const selectMatch = qbHtml.match(/<select[^>]*name="category"[^>]*>([\s\S]*?)<\/select>/);
+  if (!selectMatch) return [];
+
+  const options = [...selectMatch[1].matchAll(/<option[^>]*value="(\d+)"[^>]*>([\s\S]*?)<\/option>/g)];
+  const categories = options.map(([, value, rawText]) => {
+    const text = rawText.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/<[^>]*>/g, '').trim();
+    return { id: value, name: text };
+  });
+
+  console.log(`\nFragen-Kategorien für Quiz ${quizCmId}:\n`);
+  categories.forEach(c => console.log(`  ${c.id}: ${c.name}`));
+  return categories;
 }
 
 /**
@@ -1088,6 +1287,14 @@ async function hideActivity(moduleId, live) {
   await courseFormatAction('cm_hide', [moduleId]);
 }
 
+async function showActivity(moduleId, live) {
+  console.log(`  Aktivitaet anzeigen: Module ${moduleId}`);
+
+  if (!live) return;
+
+  await courseFormatAction('cm_show', [moduleId]);
+}
+
 async function moveActivity(moduleId, afterModuleId, live) {
   console.log(`  Aktivitaet verschieben: Module ${moduleId} nach ${afterModuleId}`);
 
@@ -1102,6 +1309,28 @@ async function moveActivity(moduleId, afterModuleId, live) {
     targetsectionid: targetCm.sectionid,
     targetcmid: afterModuleId
   });
+}
+
+async function moveActivityAfter(cmidToMove, afterCmid, live) {
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`Aktivität verschieben: ${cmidToMove} nach ${afterCmid} ${live ? '(LIVE)' : '(DRY RUN)'}`);
+  console.log('='.repeat(60));
+
+  if (!live) {
+    console.log('\nDRY RUN - nichts geaendert. Mit --live ausfuehren.');
+    return;
+  }
+
+  const state = await getCourseState();
+  const targetCm = state.cm.find(cm => String(cm.id) === String(afterCmid));
+  if (!targetCm) throw new Error(`Ziel-Aktivität ${afterCmid} nicht gefunden.`);
+
+  // core_courseformat_update_course handles "targetcmid" as "move AFTER this cmid"
+  await courseFormatAction('cm_move', [cmidToMove], {
+    targetsectionid: targetCm.sectionid,
+    targetcmid: afterCmid
+  });
+  console.log('\nAktivität erfolgreich verschoben!');
 }
 
 // --- HTML-Generierung: Inline-Styles (GitHub Light Theme) ---
@@ -1502,6 +1731,7 @@ Read:
   list-activities <sectionId>                List activities in a section
   show-label <moduleId>                      Show label HTML content
   show-page <moduleId>                       Show page HTML content
+  get-quiz-by-name <sectionNum> <quizName>   Find quiz cmid by name in a section
 
 Update (HTML or Markdown file — .md is auto-converted via marked):
   update-label <moduleId> <file>             Replace label content
@@ -1524,17 +1754,24 @@ Section Operations:
   rename-section <sectionId> <title>         Rename a section
   move-section <sectionId> <targetSectionId> Move section before target
   delete-section <sectionId>                 Delete a section
+  clear-section <sectionNumOrId>             Clear all activities in a section
+  hide-section <sectionId>                   Hide a section
+  show-section <sectionId>                   Show a section
 
 Activity Operations:
   delete-activity <moduleId>                 Delete an activity
   indent-activity <moduleId>                 Indent an activity
   hide-activity <moduleId>                   Hide an activity
+  show-activity <moduleId>                   Show an activity
   move-activity <moduleId> <afterModuleId>   Move activity after target
+  move-activity-after <cmid> <afterCmid>     Move activity after another activity
 
 Quiz:
   import-gift <cmid> <giftFile>             Import GIFT questions into a quiz
+  import-moodle-xml <cmid> <xmlFile>        Import Moodle-XML questions into a quiz
   delete-quiz-questions <cmid> [category]    Delete questions from a quiz category
   add-questions-to-quiz <cmid> [category]    Assign questions to quiz slots
+  get-quiz-categories <cmid>                 List question categories for a quiz
 
 AI Grading:
   grade-essay <cmid>                         Grade essay questions with AI (dry run)
@@ -1614,6 +1851,9 @@ try {
       break;
     case 'show-page':
       await showPage(parseInt(cleanArgs[1]));
+      break;
+    case 'get-quiz-by-name':
+      await getQuizByName(parseInt(cleanArgs[1]), cleanArgs[2]);
       break;
 
     // --- Update ---
@@ -1698,6 +1938,18 @@ try {
         console.log('DRY RUN - no changes. Use --live to apply.');
       }
       break;
+    case 'clear-section':
+      if (!cleanArgs[1]) throw new Error('Usage: clear-section <sectionNumOrId>');
+      await clearSection(cleanArgs[1], live);
+      break;
+    case 'hide-section':
+      if (!cleanArgs[1]) throw new Error('Usage: hide-section <sectionId>');
+      await hideSection(parseInt(cleanArgs[1]), live);
+      break;
+    case 'show-section':
+      if (!cleanArgs[1]) throw new Error('Usage: show-section <sectionId>');
+      await showSection(parseInt(cleanArgs[1]), live);
+      break;
 
     // --- Activity Operations ---
     case 'delete-activity':
@@ -1709,14 +1961,25 @@ try {
     case 'hide-activity':
       await hideActivity(parseInt(cleanArgs[1]), live);
       break;
+    case 'show-activity':
+      await showActivity(parseInt(cleanArgs[1]), live);
+      break;
     case 'move-activity':
       await moveActivity(parseInt(cleanArgs[1]), parseInt(cleanArgs[2]), live);
+      break;
+    case 'move-activity-after':
+      await moveActivityAfter(parseInt(cleanArgs[1]), parseInt(cleanArgs[2]), live);
       break;
 
     // --- Quiz ---
     case 'import-gift': {
       if (!cleanArgs[2]) throw new Error('Usage: import-gift <cmid> <giftFile>');
       await importGiftQuestions(resolve(cleanArgs[2]), parseInt(cleanArgs[1]));
+      break;
+    }
+    case 'import-moodle-xml': {
+      if (!cleanArgs[2]) throw new Error('Usage: import-moodle-xml <cmid> <xmlFile>');
+      await importMoodleXmlQuestions(resolve(cleanArgs[2]), parseInt(cleanArgs[1]));
       break;
     }
     case 'delete-quiz-questions': {
@@ -1727,6 +1990,10 @@ try {
     case 'add-questions-to-quiz':
       if (!cleanArgs[1]) throw new Error('Usage: add-questions-to-quiz <cmid> [categoryName]');
       await addQuestionsToQuiz(parseInt(cleanArgs[1]), cleanArgs[2]);
+      break;
+    case 'get-quiz-categories':
+      if (!cleanArgs[1]) throw new Error('Usage: get-quiz-categories <cmid>');
+      await getQuizCategories(parseInt(cleanArgs[1]));
       break;
 
     // --- Diagnostics ---

@@ -82,16 +82,19 @@ function planActivity(act, contentPath, filePath, sectionNum) {
   if (t === 'quiz') {
     if (!act.quizConfig) return { skip: 'no quiz-config.json' };
     const cfgPath = shellQuote(join(relative(process.cwd(), act._dir), act.quizConfig));
-    const giftPath = act.questionsFile
+    const questionsPath = act.questionsFile
       ? shellQuote(join(relative(process.cwd(), act._dir), act.questionsFile)) : null;
     const lines = [`create-quiz ${sec} ${cfgPath}`];
-    if (giftPath) {
+    if (questionsPath) {
+      const importCmd = act.questionsFormat === 'moodle-xml' ? 'import-moodle-xml' : 'import-gift';
       lines.push(`# Nach create-quiz: cmid des neuen Quiz ermitteln (z.B. structure), dann:`);
-      lines.push(`# import-gift <cmid> ${giftPath}`);
+      lines.push(`# ${importCmd} <cmid> ${questionsPath}`);
       lines.push(`# add-questions-to-quiz <cmid>`);
     }
-    return { cmd: lines.join('\n'),
-             warn: 'quiz: configJson nur teilweise befüllt (timeopen/timeclose/review fehlen). Fragen sind Platzhalter — von Lehrperson via Question Bank exportieren.' };
+    const warn = questionsPath
+      ? 'quiz: configJson nur teilweise befüllt (timeopen/timeclose/review fehlen).'
+      : 'quiz: configJson nur teilweise befüllt. Fragen konnten nicht exportiert werden — via Question Bank exportieren.';
+    return { cmd: lines.join('\n'), warn };
   }
   return { skip: `unsupported type: ${t}` };
 }

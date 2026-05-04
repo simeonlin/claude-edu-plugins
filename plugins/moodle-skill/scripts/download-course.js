@@ -304,6 +304,87 @@ async function fetchQuizModule(moduleId, name) {
   return { bodyHtml, quizConfig };
 }
 
+/**
+ * Export quiz questions as Moodle XML via the Question Bank export form.
+ * Requires teacher permissions. Returns XML content string or throws.
+ */
+async function fetchQuizQuestionsXml(quizCmId, quizName) {
+  const exportUrl = `${MOODLE_URL}/question/bank/exportquestions/export.php?cmid=${quizCmId}`;
+  const resp = await moodleFetch(exportUrl);
+  const html = await resp.text();
+
+  if (html.includes('login/index.php')) {
+    throw new Error('Session abgelaufen');
+  }
+  if (!html.includes('submitbutton') && !html.includes('exportquestions')) {
+    throw new Error('Kein Zugriff auf Question Bank Export — Dozentenrechte erforderlich');
+  }
+
+  // Extract sesskey from hidden input
+  const sesskeyMatch = html.match(/<input[^>]*name="sesskey"[^>]*value="([^"]+)"/i);
+  if (!sesskeyMatch) throw new Error('Sesskey nicht im Export-Formular gefunden');
+  const sesskey = sesskeyMatch[1];
+
+  // Find best matching category in the select
+  const selectMatch = html.match(/<select[^>]*name="category"[^>]*>([\s\S]*?)<\/select>/);
+  let categoryValue = null;
+  if (selectMatch) {
+    const options = [...selectMatch[1].matchAll(/<option[^>]*value="([^"]+)"[^>]*>([\s\S]*?)<\/option>/g)];
+    // Priority 1: exact quiz name match
+    for (const [, value, rawText] of options) {
+      const text = rawText.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/<[^>]*>/g, '').trim();
+      if (text === quizName || text.startsWith(quizName + ' (')) {
+        categoryValue = value;
+        break;
+      }
+    }
+    // Priority 2: first non-default/non-top category
+    if (!categoryValue) {
+      for (const [, value, rawText] of options) {
+        const text = rawText.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/<[^>]*>/g, '').trim();
+        if (!text.match(/^(Oberste|Standard|Top|Default)\s/i)) {
+          categoryValue = value;
+          break;
+        }
+      }
+    }
+    // Priority 3: fallback to first option
+    if (!categoryValue && options.length > 0) categoryValue = options[0][1];
+  }
+  if (!categoryValue) throw new Error('Keine Fragenkategorie im Export-Formular gefunden');
+
+  // Collect all hidden form fields for the POST body
+  const params = new URLSearchParams();
+  for (const [tag] of [...html.matchAll(/<input[^>]+type="hidden"[^>]*>/gi)]) {
+    const nameMatch = tag.match(/name="([^"]+)"/);
+    const valueMatch = tag.match(/value="([^"]*)"/);
+    if (nameMatch && valueMatch) params.set(nameMatch[1], valueMatch[1]);
+  }
+  params.set('sesskey', sesskey);
+  params.set('category', categoryValue);
+  params.set('format', 'xml');
+  params.set('cattofile', '1');
+  params.set('contexttofile', '1');
+  params.set('submitbutton', 'Export');
+
+  const exportResp = await moodleFetch(exportUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  const body = await exportResp.text();
+  const ct = exportResp.headers.get('content-type') || '';
+
+  if (!ct.includes('xml') && !body.trimStart().startsWith('<?xml') && !body.includes('<quiz>')) {
+    const errMatch = body.match(/class="[^"]*alert[^"]*"[^>]*>([\s\S]*?)<\/div>/);
+    const errMsg = errMatch
+      ? errMatch[1].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 200)
+      : 'Unbekannter Fehler';
+    throw new Error(`Export fehlgeschlagen: ${errMsg}`);
+  }
+  return body;
+}
+
 async function fetchResourceFileUrl(moduleId) {
   const url = `${MOODLE_URL}/mod/resource/view.php?id=${moduleId}&redirect=0`;
   try {
@@ -455,21 +536,16 @@ async function processModule(cm, section, idx, secDir) {
 
   if (cm.module === 'quiz' && result.quizConfig) {
     writeJson(join(actDir, 'quiz-config.json'), result.quizConfig);
-    const gift = [
-      '// GIFT-Fragen für Quiz: ' + cm.name,
-      '// Quelle: ' + meta.moodleUrl,
-      '//',
-      '// HINWEIS: Fragen konnten nicht heruntergeladen werden — als',
-      '// Student/in besteht kein Zugriff auf die Fragensammlung.',
-      '// Lass diese Datei von einer Lehrperson über Question Bank',
-      '// → Export → GIFT-Format füllen, dann mit',
-      '//   moodle-updater.js import-gift <cmid> questions.gift',
-      '// + add-questions-to-quiz <cmid> hochladen.',
-      '',
-    ].join('\n');
-    writeFileSync(join(actDir, 'questions.gift'), gift);
     meta.quizConfig = 'quiz-config.json';
-    meta.questionsFile = 'questions.gift';
+    try {
+      const xmlContent = await fetchQuizQuestionsXml(cm.id, cm.name);
+      writeFileSync(join(actDir, 'questions.xml'), xmlContent);
+      meta.questionsFile = 'questions.xml';
+      meta.questionsFormat = 'moodle-xml';
+      console.log(`  ✓ Fragen exportiert: ${cm.name}`);
+    } catch (e) {
+      recordError(`quiz questions ${cm.id} (${cm.name})`, e.message);
+    }
   } else if (cm.module === 'url' && result.externalUrl) {
     meta.externalUrl = result.externalUrl;
   } else if (cm.module === 'resource' && result.fileUrl) {
