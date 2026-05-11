@@ -581,9 +581,10 @@ function setMoodleDateFields(formData, fieldName, timestamp, withEnabled = true)
   formData.set(`${fieldName}[minute]`, String(get('minute')));
 }
 
-function createUrl(sectionNum, name, externalUrl, live, beforemod) {
+function createUrl(sectionNum, name, externalUrl, live, beforemod, display = 3) {
   return createModule('url', sectionNum, name, live, (_form, formData) => {
     formData.set('externalurl', externalUrl);
+    formData.set('display', String(display));
   }, beforemod);
 }
 
@@ -1739,7 +1740,8 @@ Update (HTML or Markdown file — .md is auto-converted via marked):
   update-summary <sectionId> <file>          Replace section summary
 
 Create (HTML or Markdown file — .md is auto-converted via marked):
-  create-url <sectionNum> <name> <url>       Create a URL resource
+  create-url <sectionNum> <name> <url>       Create a URL resource (opens in new window by default)
+    --display <0-6>                            Display mode: 0=Auto 1=Embed 2=Frame 3=NewWindow(default) 4=Download 5=Open 6=Popup
   create-page <sectionNum> <name> <file>     Create a page
   create-label <sectionNum> <file>           Create a label (no name field)
   create-resource <sectionNum> <name> <file> Create a file resource (upload)
@@ -1798,6 +1800,7 @@ Examples:
 
   # Create a URL resource (dry run)
   node moodle-updater.js create-url 5 "Angular Docs" "https://angular.dev"
+  node moodle-updater.js create-url 5 "Angular Docs" "https://angular.dev" --display 5   # same window
 
   # Create a page from HTML file (live)
   node moodle-updater.js create-page 3 "Lesson Plan" plan.html --live
@@ -1868,9 +1871,13 @@ try {
       break;
 
     // --- Create ---
-    case 'create-url':
-      await createUrl(parseInt(cleanArgs[1]), cleanArgs[2], cleanArgs[3], live);
+    case 'create-url': {
+      if (!cleanArgs[3]) throw new Error('Usage: create-url <sectionNum> <name> <url> [--display <0-6>]');
+      const displayIdx = args.indexOf('--display');
+      const display = displayIdx >= 0 ? parseInt(args[displayIdx + 1], 10) : 3;
+      await createUrl(parseInt(cleanArgs[1]), cleanArgs[2], cleanArgs[3], live, undefined, display);
       break;
+    }
     case 'create-page':
       if (!cleanArgs[3]) throw new Error('Usage: create-page <sectionNum> <name> <htmlOrMdFile>');
       await createPage(parseInt(cleanArgs[1]), cleanArgs[2], loadHtmlOrMd(cleanArgs[3]), live);

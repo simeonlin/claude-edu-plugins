@@ -165,15 +165,16 @@ server.tool(
 
 server.tool(
   "moodle_create_url",
-  "Create a URL activity in a Moodle section (dry-run unless live=true)",
+  "Create a URL activity in a Moodle section (dry-run unless live=true). By default the link opens in a new window (display=3).",
   {
     sectionNum: z.string().describe("Section number"),
     name: z.string().describe("Display name"),
     url: z.string().describe("URL"),
+    display: z.number().int().min(0).max(6).default(3).describe("How to open the URL: 0=Auto 1=Embed 2=Frame 3=NewWindow(default) 4=Download 5=Open 6=Popup"),
     live: z.boolean().default(false).describe("Set true to apply changes (default: dry-run)"),
   },
-  ({ sectionNum, name, url, live }) =>
-    text(run(MOODLE_SCRIPT, ["create-url", sectionNum, name, url, ...(live ? ["--live"] : [])]))
+  ({ sectionNum, name, url, display, live }) =>
+    text(run(MOODLE_SCRIPT, ["create-url", sectionNum, name, url, "--display", String(display), ...(live ? ["--live"] : [])]))
 );
 
 server.tool(
