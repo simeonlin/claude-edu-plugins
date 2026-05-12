@@ -205,20 +205,18 @@ server.tool(
 
 server.tool(
   "moodle_create_assign",
-  "Create an assignment in Moodle (dry-run unless live=true)",
+  "Create an assignment in Moodle (dry-run unless live=true). Defaults: text input + file submission enabled; open date, cutoff date, and grading due date disabled. Due date is disabled unless 'due' is provided.",
   {
     sectionNum: z.string().describe("Section number"),
     name: z.string().describe("Assignment name"),
     contentFile: z.string().describe("Path to HTML file with assignment description"),
     live: z.boolean().default(false).describe("Set true to apply changes (default: dry-run)"),
-    open: z.string().optional().describe("Open date as Unix timestamp"),
-    due: z.string().optional().describe("Due date as Unix timestamp"),
+    due: z.string().optional().describe("Due date as Unix timestamp in seconds (e.g. 1747350000 for 2025-05-15 23:59 Europe/Zurich). Use Date.parse('...') / 1000 or a UTC epoch calculator. If omitted, due date is disabled."),
   },
-  ({ sectionNum, name, contentFile, live, open, due }) =>
+  ({ sectionNum, name, contentFile, live, due }) =>
     text(run(MOODLE_SCRIPT, [
       "create-assign", sectionNum, name, contentFile,
       ...(live ? ["--live"] : []),
-      ...(open ? ["--open", open] : []),
       ...(due ? ["--due", due] : []),
     ]))
 );
@@ -238,20 +236,27 @@ server.tool(
 
 server.tool(
   "moodle_create_quiz",
-  "Create a quiz in Moodle (dry-run unless live=true)",
+  "Create a quiz in Moodle (dry-run unless live=true). Open/close times and time limit are disabled unless explicitly provided.",
   {
     sectionNum: z.string().describe("Section number"),
     name: z.string().describe("Quiz name"),
     configFile: z.string().optional().describe("Path to quiz config JSON file (optional)"),
     live: z.boolean().default(false).describe("Set true to apply changes (default: dry-run)"),
+    timeopen: z.string().optional().describe("Quiz open time as Unix timestamp in seconds (e.g. 1747350000 for 2025-05-15 08:00 Europe/Zurich). If omitted, open time is disabled."),
+    timeclose: z.string().optional().describe("Quiz close time as Unix timestamp in seconds. If omitted, close time is disabled."),
+    timeLimit: z.number().int().optional().describe("Time limit per attempt in seconds (e.g. 3600 = 1 hour). If omitted, no time limit."),
   },
-  async ({ sectionNum, name, configFile, live }) => {
+  async ({ sectionNum, name, configFile, live, timeopen, timeclose, timeLimit }) => {
     let config = { name };
     if (configFile) {
       const { readFileSync } = await import("fs");
       const fileConfig = JSON.parse(readFileSync(resolve(configFile), "utf-8"));
       config = { ...fileConfig, name }; // name from MCP parameter always wins
     }
+    // Explicit MCP parameters override config file values
+    if (timeopen !== undefined) config.timeopen = parseInt(timeopen, 10);
+    if (timeclose !== undefined) config.timeclose = parseInt(timeclose, 10);
+    if (timeLimit !== undefined) config.timeLimit = timeLimit;
     const { writeFileSync, unlinkSync } = await import("fs");
     const tmpPath = resolve(__dirname, `tmp-quiz-config-${Date.now()}.json`);
     writeFileSync(tmpPath, JSON.stringify(config));

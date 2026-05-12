@@ -607,16 +607,28 @@ function createAssign(sectionNum, name, introHtml, live, beforemod, dates) {
       formData.set('introeditor[text]', introHtml);
       formData.set('introeditor[format]', '1');
     }
-    if (dates) {
-      if (dates.open !== undefined) setMoodleDateFields(formData, 'allowsubmissionsfromdate', dates.open);
-      if (dates.due !== undefined) {
-        setMoodleDateFields(formData, 'duedate', dates.due);
-        // cutoffdate = duedate (no late submissions); field has no [enabled] toggle
-        setMoodleDateFields(formData, 'cutoffdate', dates.due, false);
-        // gradingduedate must be >= duedate; set to 7 days after due
-        setMoodleDateFields(formData, 'gradingduedate', dates.due + 7 * 24 * 60 * 60);
-      }
+
+    // Abgabetypen: Texteingabe und Dateiabgabe standardmässig aktiviert
+    formData.set('assignsubmission_onlinetext_enabled', '1');
+    formData.set('assignsubmission_file_enabled', '1');
+
+    // Abgabebeginn: standardmässig deaktiviert
+    formData.delete('allowsubmissionsfromdate[enabled]');
+    if (dates?.open !== undefined) {
+      setMoodleDateFields(formData, 'allowsubmissionsfromdate', dates.open);
     }
+
+    // Fälligkeitsdatum: nur setzen wenn von aussen angegeben, sonst deaktiviert
+    formData.delete('duedate[enabled]');
+    if (dates?.due !== undefined) {
+      setMoodleDateFields(formData, 'duedate', dates.due);
+    }
+
+    // Letzte Abgabe-Möglichkeit (cutoffdate): immer deaktiviert
+    formData.delete('cutoffdate[enabled]');
+
+    // An Bewertung erinnern (gradingduedate): immer deaktiviert
+    formData.delete('gradingduedate[enabled]');
   }, beforemod);
 }
 
@@ -664,9 +676,7 @@ async function createQuiz(sectionNum, config, live) {
     formData.set('timelimit[number]', String(config.timeLimit));
     formData.set('timelimit[timeunit]', '1');  // 1 = Sekunden
   }
-  if (config.attempts !== undefined) {
-    formData.set('attempts', String(config.attempts));
-  }
+  formData.set('attempts', String(config.attempts ?? 1));
   if (config.shuffle !== undefined) {
     formData.set('shuffleanswers', config.shuffle ? '1' : '0');
   }
@@ -698,9 +708,17 @@ async function createQuiz(sectionNum, config, live) {
     console.log(`  review-optionen: "${config.review}" Preset angewendet`);
   }
 
-  // Schedule: open/close times
-  if (config.timeopen) setMoodleDateFields(formData, 'timeopen', config.timeopen);
-  if (config.timeclose) setMoodleDateFields(formData, 'timeclose', config.timeclose);
+  // Schedule: open/close times – explicitly disable when not provided
+  if (config.timeopen !== undefined) {
+    setMoodleDateFields(formData, 'timeopen', config.timeopen);
+  } else {
+    formData.delete('timeopen[enabled]');
+  }
+  if (config.timeclose !== undefined) {
+    setMoodleDateFields(formData, 'timeclose', config.timeclose);
+  } else {
+    formData.delete('timeclose[enabled]');
+  }
 
   const success = await submitForm(`${MOODLE_URL}/course/modedit.php`, formData);
   if (!success) {
