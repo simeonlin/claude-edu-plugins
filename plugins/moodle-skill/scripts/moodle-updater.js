@@ -682,6 +682,9 @@ async function createQuiz(sectionNum, config, live) {
   }
   formData.set('preferredbehaviour', 'deferredfeedback');
 
+  // Browser-Sicherheit (Standard: '-' = keine JS-Sicherheit, damit Copy&Paste fuer Coddy/Source-Code funktioniert)
+  formData.set('browsersecurity', config.browsersecurity ?? '-');
+
   // SEB-Konfiguration (Feldnamen via dump-form verifiziert)
   if (config.seb) {
     formData.set('seb_requiresafeexambrowser', '1');  // 1 = Manuell konfigurieren (Moodle 4.5)
@@ -1050,7 +1053,35 @@ async function getQuizCategories(quizCmId) {
  * Get question IDs from a specific category via the Moodle AJAX web service.
  * Uses core_question_get_random_question_summaries (works in Moodle 4.5).
  */
-async function getQuestionIdsInCategory(catId, ctxId) {
+async function getQuestionIdsInCategory(catId, ctxId, quizCmId) {
+  if (quizCmId) {
+    try {
+      const qbResp = await moodleFetch(`${MOODLE_URL}/question/edit.php?cmid=${quizCmId}&cat=${catId}%2C${ctxId}`);
+      const qbHtml = await qbResp.text();
+      // Match each question item: data-itemid="<id>" ... data-value="<name>"
+      const items = [...qbHtml.matchAll(/data-itemid="(\d+)"[\s\S]*?data-value="([^"]+)"/g)];
+      if (items.length > 0) {
+        const seen = new Set();
+        const unique = [];
+        for (const [, id, name] of items) {
+          if (!seen.has(id)) {
+            seen.add(id);
+            unique.push({ id, name: name.trim() });
+          }
+        }
+        // Sort numerically/alphabetically by question name (e.g. 01 Theorie, 02 Aufgabe, 03 ...)
+        unique.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        return unique.map(u => u.id);
+      }
+      const checkboxes = [...qbHtml.matchAll(/name="q(\d+)"/g)];
+      if (checkboxes.length > 0) {
+        return [...new Set(checkboxes.map(c => c[1]))];
+      }
+    } catch {
+      // fallback to webservice
+    }
+  }
+
   const sesskey = await getSesskey();
   const payload = [{
     index: 0,
@@ -1093,7 +1124,7 @@ async function deleteQuizCategoryQuestions(quizCmId, categoryName) {
   }
 
   // 2. Get question IDs via web service
-  const questionIds = await getQuestionIdsInCategory(cat.catId, cat.ctxId);
+  const questionIds = await getQuestionIdsInCategory(cat.catId, cat.ctxId, quizCmId);
   if (questionIds.length === 0) {
     console.log(`  Keine Fragen in Kategorie "${categoryName}" zum Loeschen.`);
     return 0;
@@ -1143,7 +1174,7 @@ async function addQuestionsToQuiz(quizCmId, categoryName) {
   if (categoryName) {
     const cat = await findQuizCategory(quizCmId, categoryName);
     if (cat) {
-      questionIds = await getQuestionIdsInCategory(cat.catId, cat.ctxId);
+      questionIds = await getQuestionIdsInCategory(cat.catId, cat.ctxId, quizCmId);
     } else {
       console.log(`  WARNUNG: Kategorie "${categoryName}" nicht gefunden.`);
     }
@@ -1804,6 +1835,14 @@ AI Grading:
   dump-grading <cmid>                        Debug grading page
     --slot <num>                               Detail view for one slot
 
+Quiz Progress:
+  quiz-progress [cmids...]                   Track live student progress & code submissions
+    --section <num>                            Auto-detect all quizzes in section
+    --html <path>                              HTML dashboard path (default: ./quiz-dashboard.html)
+    --json <path>                              JSON export path
+    --xml <path>                               Path to XML question files for sample solutions
+    --no-code                                  Skip code scraping (faster)
+
 Diagnostics:
   dump-form <type> <sectionNum>              Show form fields for a module type
 
@@ -1843,7 +1882,7 @@ if (args.includes('--help') || args.includes('-h') || args.length === 0) {
 const live = args.includes('--live');
 
 // Filter out --flag and --flag <value> pairs for flags that take values
-const valueFlagNames = ['--open', '--due', '--gift', '--slot', '--model', '--report', '--browser'];
+const valueFlagNames = ['--open', '--due', '--gift', '--slot', '--model', '--report', '--browser', '--section', '--html', '--json', '--xml'];
 const cleanArgs = args.filter((a, i) => {
   if (a.startsWith('--')) return false;
   // Skip values that follow a value-flag
@@ -2058,6 +2097,29 @@ try {
       const dumpSlot = args.includes('--slot') ? parseInt(args[args.indexOf('--slot') + 1]) : null;
       const moodleHelpers = { moodleFetch, getSesskey, getCourseState, MOODLE_URL };
       await dumpGradingPage(parseInt(cleanArgs[1]), moodleHelpers, { slot: dumpSlot });
+      break;
+    }
+
+    // --- Quiz Live Progress & Code Tracking ---
+    case 'quiz-progress': {
+      const { cmdQuizProgress } = await import('./quiz-progress.js');
+      const cmidsArg = cleanArgs.slice(1).map(Number).filter(n => !isNaN(n));
+      const sectionArg = args.includes('--section') ? args[args.indexOf('--section') + 1] : null;
+      const htmlOutput = args.includes('--html') ? args[args.indexOf('--html') + 1] : './quiz-dashboard.html';
+      const jsonOutput = args.includes('--json') ? args[args.indexOf('--json') + 1] : null;
+      const xmlDir = args.includes('--xml') ? args[args.indexOf('--xml') + 1] : null;
+      const includeCode = !args.includes('--no-code');
+
+      const progressParams = {
+        cmids: cmidsArg,
+        sectionNum: sectionArg,
+        includeCode,
+        xmlDir,
+        htmlOutput,
+        jsonOutput,
+      };
+      const moodleHelpers = { moodleFetch, getSesskey, getCourseState, MOODLE_URL };
+      await cmdQuizProgress(progressParams, moodleHelpers);
       break;
     }
 

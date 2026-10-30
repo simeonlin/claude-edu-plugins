@@ -507,6 +507,29 @@ server.tool(
     ], 300_000))
 );
 
+server.tool(
+  "moodle_get_quiz_progress",
+  "Track live student progress and code submissions across quizzes (including in-progress attempts), with optional interactive HTML dashboard",
+  {
+    cmids: z.array(z.string()).optional().describe("Array of quiz module IDs (cmids)"),
+    sectionNum: z.string().optional().describe("Section number to auto-detect all quizzes from"),
+    htmlOutput: z.string().optional().describe("Output path for HTML dashboard (default: ./quiz-dashboard.html)"),
+    jsonOutput: z.string().optional().describe("Output path for JSON export"),
+    xmlDir: z.string().optional().describe("Directory with XML question files for sample solutions"),
+    includeCode: z.boolean().default(true).describe("Whether to scrape full student code (default: true)"),
+  },
+  ({ cmids, sectionNum, htmlOutput, jsonOutput, xmlDir, includeCode }) =>
+    text(run(MOODLE_SCRIPT, [
+      "quiz-progress",
+      ...(cmids && cmids.length > 0 ? cmids : []),
+      ...(sectionNum ? ["--section", sectionNum] : []),
+      ...(htmlOutput ? ["--html", htmlOutput] : []),
+      ...(jsonOutput ? ["--json", jsonOutput] : []),
+      ...(xmlDir ? ["--xml", xmlDir] : []),
+      ...(!includeCode ? ["--no-code"] : []),
+    ], 300_000))
+);
+
 // --- Course round-trip (download / template / upload) ---
 
 server.tool(
